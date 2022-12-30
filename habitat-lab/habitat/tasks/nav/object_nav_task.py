@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, List, Optional
 import attr
 import numpy as np
 from gym import spaces
-
+import torch
 from habitat.core.logging import logger
 from habitat.core.registry import registry
 from habitat.core.simulator import AgentState, Sensor, SensorTypes
@@ -177,7 +177,74 @@ class ObjectGoalSensor(Sensor):
             raise RuntimeError(
                 "Wrong goal_spec specified for ObjectGoalSensor."
             )
+# Define the sensor and register it with habitat
+# For the sensor, we will register it with a custom name
+@registry.register_sensor(name="new_sensor")
+class ObjectGoalPromptSensor(Sensor):
+    cls_uuid: str = "objectpromptgoal"
 
+    def __init__(
+        self,
+        sim,
+        config: "DictConfig",
+        dataset: "ObjectNavDatasetV1",
+        *args: Any,
+        **kwargs: Any,
+    ):
+        self._sim = sim
+        self._dataset = dataset
+        super().__init__(config=config)
+        #READ IN PICKLE THING
+        self.embeddings = torch.load("tfm.pkl")
+
+    def _get_uuid(self, *args: Any, **kwargs: Any) -> str:
+        return self.cls_uuid
+
+    def _get_sensor_type(self, *args: Any, **kwargs: Any):
+        return SensorTypes.SEMANTIC
+
+    def _get_observation_space(self, *args: Any, **kwargs: Any):
+        sensor_shape = (1,)
+        max_value = self.config.goal_spec_max_val - 1
+        if self.config.goal_spec == "TASK_CATEGORY_ID":
+            max_value = max(
+                self._dataset.category_to_task_category_id.values()
+            )
+
+        return spaces.Box(
+            low=0, high=max_value, shape=sensor_shape, dtype=np.int64
+        )
+
+    def get_observation(
+        self,
+        observations,
+        *args: Any,
+        episode: ObjectGoalNavEpisode,
+        **kwargs: Any,
+    ) -> Optional[np.ndarray]:
+
+        if len(episode.goals) == 0:
+            logger.error(
+                f"No goal specified for episode {episode.episode_id}."
+            )
+            return None
+        if not isinstance(episode.goals[0], ObjectGoal):
+            logger.error(
+                f"First goal should be ObjectGoal, episode {episode.episode_id}."
+            )
+            return None
+        category_name = episode.object_category
+        if self.config.goal_spec == "TASK_CATEGORY_ID":
+            query_num = self._dataset.category_to_task_category_id[category_name]
+            return self.embeddings[query_num]
+        elif self.config.goal_spec == "OBJECT_ID":
+            obj_goal = episode.goals[0]
+            assert isinstance(obj_goal, ObjectGoal)  # for type checking
+            return np.array([obj_goal.object_name_id], dtype=np.int64)
+        else:
+            raise RuntimeError(
+                "Wrong goal_spec specified for ObjectGoalSensor."
+            )
 
 @registry.register_task(name="ObjectNav-v1")
 class ObjectNavigationTask(NavigationTask):
